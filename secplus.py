@@ -84,9 +84,6 @@ def decode(code):
 
 
 def _decode_v2_half(code):
-    if code[:2] != [0, 0]:
-        raise ValueError("First two bits of packet were not zero")
-
     try:
         order = _ORDER[(code[2] << 3) | (code[3] << 2) | (code[4] << 1) | code[5]]
         invert = _INVERT[(code[6] << 3) | (code[7] << 2) | (code[8] << 1) | code[9]]
@@ -119,12 +116,20 @@ def decode_v2(code):
     """Decode a Security+ 2.0 transmission and return the rolling and fixed codes.
 
     Arguments:
-    code -- a list containing the 80 payload bits from a pair of packets
+    code -- a list containing the 80 or 128 payload bits from a pair of packets
 
     Raises a ValueError if the payload bits are invalid for any reason.
     """
-    rolling1, fixed1 = _decode_v2_half(code[:40])
-    rolling2, fixed2 = _decode_v2_half(code[40:])
+    if code[:2] == [0, 0] and code[40:42] == [0, 0]:
+        mode = '00'
+        rolling1, fixed1 = _decode_v2_half(code[0:0+40])
+        rolling2, fixed2 = _decode_v2_half(code[40:40+40])
+    elif code[:2] == [0, 1] and code[64:66] == [0, 1]:
+        mode = '01'
+        rolling1, fixed1 = _decode_v2_half(code[0:0+64])
+        rolling2, fixed2 = _decode_v2_half(code[64:64+64])
+    else:
+        raise ValueError("First two bits of packet were not 00 or 01: %s" % (code[:2] + code[40:42]) )
 
     rolling_digits = rolling2[8:] + rolling1[8:]
     rolling_digits += rolling2[4:8] + rolling1[4:8]
@@ -138,6 +143,7 @@ def decode_v2(code):
     rolling = int("{0:028b}".format(rolling)[::-1], 2)
 
     fixed = int("".join(str(bit) for bit in fixed1 + fixed2), 2)
+
     return rolling, fixed
 
 
@@ -194,8 +200,14 @@ def encode_ook(rolling, fixed, fast=True):
 
 
 def _encode_v2_half(rolling, fixed):
-    code = [0, 0]
-    parts = [fixed[:10], fixed[10:], []]
+    if len(fixed) == 20:
+        code = [0, 0]
+    elif len(fixed) == 36:
+        code = [0, 1]
+    else:
+        raise ValueError("Invalid fixed code length: %s" % len(fixed))
+
+    parts = [fixed[:int(len(fixed)/2)], fixed[int(len(fixed)/2):], []]
 
     for digit in rolling[:4]:
         code.append(digit >> 1)
@@ -203,6 +215,10 @@ def _encode_v2_half(rolling, fixed):
     for digit in rolling[4:]:
         parts[2].append(digit >> 1)
         parts[2].append(digit & 1)
+    if len(fixed) == 36:
+        for digit in rolling[:4]:
+            parts[2].append(digit >> 1)
+            parts[2].append(digit & 1)
 
     order = _ORDER[(code[2] << 3) | (code[3] << 2) | (code[4] << 1) | code[5]]
     invert = _INVERT[(code[6] << 3) | (code[7] << 2) | (code[8] << 1) | code[9]]
@@ -213,7 +229,7 @@ def _encode_v2_half(rolling, fixed):
         if invert[i]:
             parts_permuted[i] = [bit ^ 1 for bit in parts_permuted[i]]
 
-    for i in range(10):
+    for i in range(int(len(fixed)/2)):
         code += [parts_permuted[0][i], parts_permuted[1][i], parts_permuted[2][i]]
 
     return code
@@ -231,8 +247,15 @@ def encode_v2(rolling, fixed):
 
     if rolling >= 2**28:
         raise ValueError("Rolling code must be less than 2^28")
+    if fixed >= 2**72:
+        raise ValueError("Fixed code must be less than 2^72")
+
+    mode = '00'
+    fixed_bits_length = 20
     if fixed >= 2**40:
-        raise ValueError("Fixed code must be less than 2^40")
+        mode = '01'
+        fixed_bits_length = 36
+
 
     rolling = int("{0:028b}".format(rolling)[::-1], 2)
     rolling_base3 = [0] * 18
@@ -242,11 +265,12 @@ def encode_v2(rolling, fixed):
     rolling1 = rolling_base3[14:18] + rolling_base3[6:10] + rolling_base3[1:2]
     rolling2 = rolling_base3[10:14] + rolling_base3[2:6] + rolling_base3[0:1]
 
-    fixed_bits = [int(bit) for bit in "{0:040b}".format(fixed)]
-    fixed1 = fixed_bits[:20]
-    fixed2 = fixed_bits[20:]
+    fixed_bits = [int(bit) for bit in ("{0:0" + str(fixed_bits_length * 2) + "b}").format(fixed)]
+    fixed1 = fixed_bits[:fixed_bits_length]
+    fixed2 = fixed_bits[fixed_bits_length:]
 
-    return _encode_v2_half(rolling1, fixed1) + _encode_v2_half(rolling2, fixed2)
+    code = _encode_v2_half(rolling1, fixed1) + _encode_v2_half(rolling2, fixed2)
+    return code
 
 
 def _manchester(code):
@@ -269,8 +293,8 @@ def encode_v2_manchester(rolling, fixed):
 
     preamble = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0]
     code = encode_v2(rolling, fixed)
-    packet1 = preamble + [0] + code[:40]
-    packet2 = preamble + [1] + code[40:]
+    packet1 = preamble + [0] + code[:int(len(code)/2)]
+    packet2 = preamble + [1] + code[int(len(code)/2):]
     blank = [0] * 33
 
     return _manchester(packet1) + blank + _manchester(packet2) + blank
@@ -317,9 +341,25 @@ def _fixed_pretty(fixed):
 
 def pretty_v2(rolling, fixed):
     """Pretty-print a Security+ 2.0 rolling and fixed code"""
-    return "Security+ 2.0:  rolling={0}  fixed={1}  ({2})".format(rolling, fixed,
-                                                                  _fixed_pretty_v2(fixed))
+    #return _fixed_pretty_v2(fixed)
+    return "Security+ 2.0:  rolling={0}  fixed={1}  ({2})".format(rolling, fixed, _fixed_pretty_v2(fixed))
 
 
 def _fixed_pretty_v2(fixed):
-    return "button={0} remote_id={1}".format(fixed >> 32, fixed & 0xffffffff)
+    if fixed < 2**40:
+        return "button={0} remote_id={1}".format(fixed >> 32, fixed & 0xffffffff)
+    else:
+        s4 = fixed & 0x3FFFFF
+        d3 = (fixed >> 22) & 0xf
+        s3 = (fixed >> 26) & 0x3ff
+        d2 = (fixed >> 36) & 0x3f
+        s2 = (fixed >> 42) & 0xfff
+        d1 = (fixed >> 54) & 0xff
+        s1 = fixed >> 62
+
+	#the pin is d2 and then d1. d3 is just the last for bits of d1
+        pin = (d2 << 8) | d1
+        #calcd3 = ((s1 >> 2) & 0xf) ^ (pin & 0xf) ^ ((pin >> 4) & 0xf) ^ ((pin >> 8) & 0xf) ^ ((pin >> 12) & 0xf)
+        pin = str(pin).zfill(4)
+
+        return "id1={0} id2={1} id3={2} id4={3} pin={4}".format(s1,s2,s3,s4,pin)

@@ -41,6 +41,7 @@ class blk(gr.sync_block):
         self.buffer = []
         self.last_pair = []
         self.pair = []
+        self.mode = ''
 
     def work(self, input_items, output_items):
         for n, sample in enumerate(input_items[0]):
@@ -77,7 +78,17 @@ class blk(gr.sync_block):
         start = manchester.find("1010101010101010101010101010101001010101")
         if start == -1:
             return
-        manchester = manchester[start:start+124]
+
+        #check for mode so we know how many bits to keep
+        if manchester[44:48] == '1010':
+            mode = '00'
+            manchester = manchester[start:start+124]
+        elif manchester[44:48] == '1001':
+            mode = '01'
+            manchester = manchester[start:start+172]
+        else:
+            return
+
         baseband = []
         for i in range(0, len(manchester), 2):
             if manchester[i:i+2] == "01":
@@ -86,13 +97,20 @@ class blk(gr.sync_block):
                 baseband.append(0)
             else:
                 return
-    
+
+        if mode == '00' and len(baseband) != 62:
+            return
+        if mode == '01' and len(baseband) != 86:
+            return
+
+
         if baseband[21] == 0:
             self.pair = baseband[22:]
-        elif baseband[21] == 1 and len(self.pair) == 40:
+            self.mode = mode
+        elif baseband[21] == 1 and self.mode == mode:
             self.pair += baseband[22:]
 
-        if len(self.pair) == 80 and self.pair != self.last_pair:
+        if (len(self.pair) == 80 or len(self.pair) == 128) and self.pair != self.last_pair:
             try:
                 rolling, fixed = secplus.decode_v2(self.pair)
                 print(secplus.pretty_v2(rolling, fixed))
