@@ -129,7 +129,7 @@ def decode_v2(code):
         rolling1, fixed1 = _decode_v2_half(code[0:0+64])
         rolling2, fixed2 = _decode_v2_half(code[64:64+64])
     else:
-        raise ValueError("First two bits of packet were not 00 or 01: %s" % (code[:2] + code[40:42]) )
+        raise ValueError("First two bits of packet were not 00 or 01: %s" % (code[:2] + code[40:42] + code[64:66]) )
 
     rolling_digits = rolling2[8:] + rolling1[8:]
     rolling_digits += rolling2[4:8] + rolling1[4:8]
